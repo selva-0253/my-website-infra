@@ -1,62 +1,80 @@
 # my-website-infra
 
-Terraform for the static site in [`selva-0253/my-website`](https://github.com/selva-0253/my-website):
-private S3 bucket, CloudFront (OAC), optional ACM + Route 53 domain, and the
-OIDC role the website repo uses to deploy content.
+Terraform for the static site in `selva-0253/my-website`: private S3 bucket,
+CloudFront (OAC), ACM certificate, Cloudflare DNS, and the OIDC role the
+website repo deploys with.
 
 ```
-bootstrap/   run once by hand: state bucket, GitHub OIDC provider, CI roles
-site/        the website infrastructure, run by GitHub Actions
-.github/workflows/terraform.yml   plan on PR, plan + approved apply on main
+bootstrap/                  once per AWS account, run by an admin (local)
+  terraform.tfvars          account / repo / environment settings
+modules/static-site/        reusable site module (no environment values)
+envs/prod/                  one folder per environment
+  terraform.tfvars          environment settings (domain, region)
+  backend.hcl               state key for this environment
+.github/workflows/
+  terraform.yml             triggers; one job per environment
+  terraform-env.yml         reusable plan -> approval -> apply
 ```
 
-| Role | Who can assume it | Can do |
-|---|---|---|
-| `my-website-tf-plan` | this repo: PRs and `main` | read-only + state lock |
-| `my-website-tf-apply` | this repo: `infra-prod` environment only | manage site buckets, CloudFront, ACM, `my-website-*` roles, site DNS zone |
-| `my-website-prod-github-deploy` | website repo: `production` environment | sync site bucket, invalidate CloudFront |
+## Who manages what
 
-## First-time setup
+| Item | Managed by |
+|---|---|
+| State bucket, GitHub OIDC provider | bootstrap |
+| `my-website-tf-plan` / `-tf-apply` roles (infra CI) | bootstrap |
+| `my-website-<env>-site-deploy` role trust (who can deploy) | bootstrap |
+| GitHub environments `infra-<env>` and website `production` | bootstrap |
+| GitHub variables (infra repo + website `production` env) | bootstrap |
+| Bucket, CloudFront, certificate, DNS, deploy role permissions, SSM parameters | `envs/<env>` via CI |
+| Cloudflare API tokens (GitHub secrets) | you, by hand (credentials) |
 
-1. **Bootstrap** (from a machine with admin AWS credentials, Terraform >= 1.10):
+GitHub account and repository IDs used in the OIDC trust policies are looked
+up from the GitHub API. Nothing account-specific is in module code.
+
+## One-time setup
+
+Prerequisites on the admin machine: Terraform >= 1.10, AWS CLI v2, admin AWS
+login (`aws configure sso`).
+
+1. **Tokens**
+   - GitHub fine-grained token, repos `my-website` and `my-website-infra`,
+     permissions: Administration RW, Environments RW, Variables RW, Metadata R.
+   - Cloudflare API tokens for zone `tecssol.uk`:
+     - plan: *Zone:Read* + *DNS:Read*
+     - apply: *Zone:Read* + *DNS:Edit*
+2. **Bootstrap**
    ```bash
+   export GITHUB_TOKEN=<github token>
    cd bootstrap
-   terraform init
-   terraform apply          # set -var hosted_zone_id=... if you use a domain
-   terraform output
+   terraform init -upgrade
+   terraform plan
+   terraform apply
    ```
-   If the account already has a GitHub OIDC provider, add
-   `-var create_github_oidc_provider=false`.
-
-2. **GitHub, this repo**:
-   - Settings → Secrets and variables → Actions → **Variables**: add
-     `TF_STATE_BUCKET`, `TF_PLAN_ROLE_ARN`, `TF_APPLY_ROLE_ARN`, `AWS_REGION`
-     from the bootstrap outputs.
-   - Settings → Environments → create **`infra-prod`**, add yourself as a
-     *Required reviewer*, restrict deployment branches to `main`.
-
-3. **Lock file**: run `terraform init -backend-config="bucket=<TF_STATE_BUCKET>"`
-   once in `site/` and commit `site/.terraform.lock.hcl`.
-
-4. Push to `main` → the workflow plans, waits for your approval, applies.
-
-5. **GitHub, website repo** → Settings → Environments → `production` → secrets:
-   `AWS_ROLE_ARN`, `S3_BUCKET_WEBSITE`, `CLOUDFRONT_DISTRIBUTION_ID`, `AWS_REGION`
-   (shown in the apply job summary / `terraform output`). Then delete the old
-   `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` secrets.
+3. **Secrets** in `my-website-infra`:
+   - Settings > Secrets and variables > Actions > *Repository secret*
+     `CLOUDFLARE_API_TOKEN` = plan token
+   - Settings > Environments > `infra-prod` > *Environment secret*
+     `CLOUDFLARE_API_TOKEN` = apply token
+4. Push. The workflow plans, waits for approval on `infra-prod`, applies.
+   (`.terraform.lock.hcl` files are committed with hashes for all platforms.
+   After changing provider versions run `terraform init -upgrade` and commit them.)
+5. Push the website repo (or run its workflow) to publish content.
 
 ## Day to day
 
-Change `site/*.tf` or `site/terraform.tfvars` in a PR → review the plan in the
-job summary → merge → approve the `infra-prod` deployment.
+- **Infrastructure change**: PR -> review plan in the job summary -> merge ->
+  approve `infra-prod`.
+- **Content change**: push to `my-website` `main`.
+- **New environment** (e.g. `dev`): copy `envs/prod` to `envs/dev`, change its
+  `terraform.tfvars` and `backend.hcl` key, add `dev` to bootstrap
+  `environments`, re-apply bootstrap, add a `dev` job to `terraform.yml`.
 
 ## Notes
 
-- `bootstrap/` is not run by CI on purpose: CI must not manage the roles it
-  runs as. Re-run it by hand if you change CI permissions.
-- The apply role can create IAM roles with inline policies under the
-  `my-website-*` prefix. That is needed for the website deploy role, but it
-  means apply is effectively privileged; the `infra-prod` approval gate is
-  what keeps it safe. Keep this repo private and reviewers limited.
-- If you set a custom `bucket_name` in `site/`, it must start with
-  `my-website-` or the apply role can't manage it.
+- Bootstrap is never run by CI: CI must not manage the roles it runs as.
+- The apply role cannot create IAM roles; it may only set the permissions
+  policy on the deploy roles bootstrap created.
+- `envs/<env>` relies on bootstrap's naming: deploy role
+  `<project>-<env>-site-deploy`, parameters under `/<project>/<env>/`.
+- Cloudflare records are DNS-only (grey cloud). Remove any existing apex/`www`
+  records for the domain before the first apply.

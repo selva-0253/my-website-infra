@@ -1,0 +1,139 @@
+name: Terraform environment
+
+# Reusable: plan (and on main, approved apply) for one folder under envs/.
+#
+# Repository variables (written by bootstrap):
+#   AWS_REGION, TF_STATE_BUCKET, TF_PLAN_ROLE_ARN, TF_APPLY_ROLE_ARN
+# Secrets (set by hand, they are credentials):
+#   CLOUDFLARE_API_TOKEN  repository secret, DNS read   -> used by plan
+#   CLOUDFLARE_API_TOKEN  infra-<env> environment secret, DNS edit -> used by apply
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        type: string
+        required: true
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TF_VERSION: "1.13.x"
+  TF_DIR: envs/${{ inputs.environment }}
+
+jobs:
+  plan:
+    name: plan (${{ inputs.environment }})
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    outputs:
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.TF_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+
+      - name: Init
+        run: |
+          terraform -chdir="$TF_DIR" init \
+            -backend-config=backend.hcl \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ vars.AWS_REGION }}"
+
+      - name: Validate
+        run: terraform -chdir="$TF_DIR" validate
+
+      - name: Plan
+        id: plan
+        run: |
+          set +e
+          terraform -chdir="$TF_DIR" plan -detailed-exitcode -out=tfplan
+          code=$?
+          set -e
+          if [ "$code" -eq 1 ]; then exit 1; fi
+          echo "has_changes=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Plan summary
+        run: |
+          {
+            echo "## Terraform plan: ${{ inputs.environment }}"
+            echo '```'
+            terraform -chdir="$TF_DIR" show -no-color tfplan | tail -c 60000
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload plan
+        if: github.ref == 'refs/heads/main' && steps.plan.outputs.has_changes == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan-${{ inputs.environment }}
+          path: |
+            ${{ env.TF_DIR }}/tfplan
+            ${{ env.TF_DIR }}/.terraform.lock.hcl
+          retention-days: 1
+
+  apply:
+    name: apply (${{ inputs.environment }})
+    needs: plan
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    environment: infra-${{ inputs.environment }}   # waits for approval
+    concurrency:
+      group: terraform-apply-${{ inputs.environment }}
+      cancel-in-progress: false
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.TF_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan-${{ inputs.environment }}
+          path: ${{ env.TF_DIR }}
+
+      - name: Init
+        run: |
+          terraform -chdir="$TF_DIR" init \
+            -backend-config=backend.hcl \
+            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
+            -backend-config="region=${{ vars.AWS_REGION }}"
+
+      - name: Apply reviewed plan
+        run: terraform -chdir="$TF_DIR" apply tfplan
+
+      - name: Outputs
+        run: |
+          {
+            echo "## Outputs: ${{ inputs.environment }}"
+            echo '```'
+            terraform -chdir="$TF_DIR" output
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,4 +1,4 @@
-# Private bucket: only CloudFront (via OAC) can read it. No S3 website hosting.
+# Private bucket: only CloudFront (via OAC) can read it.
 resource "aws_s3_bucket" "site" {
   bucket = local.bucket
 }
@@ -27,7 +27,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "site" {
   }
 }
 
-# Versioning lets you recover from a bad `aws s3 sync --delete`.
+# Lets you recover from a bad `aws s3 sync --delete`.
 resource "aws_s3_bucket_versioning" "site" {
   bucket = aws_s3_bucket.site.id
   versioning_configuration {

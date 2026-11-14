@@ -1,134 +1,26 @@
 name: Terraform
 
-# PR            -> fmt + validate + plan (read-only role), plan shown in job summary
-# push to main  -> plan, then apply that exact plan after manual approval
-#                  (approval = required reviewer on the `infra-prod` environment)
+# PR            -> plan every environment (read-only role); plan shown in job summary
+# push to main  -> plan, then apply that exact plan after approval on infra-<env>
+#
+# Add an environment: create envs/<env>, add it to bootstrap `environments`,
+# re-apply bootstrap, then add a job below.
 
 on:
   pull_request:
-    paths: ["site/**", ".github/workflows/terraform.yml"]
+    paths: ["envs/**", "modules/**", ".github/workflows/terraform*.yml"]
   push:
     branches: [main]
-    paths: ["site/**", ".github/workflows/terraform.yml"]
+    paths: ["envs/**", "modules/**", ".github/workflows/terraform*.yml"]
   workflow_dispatch:
 
 permissions:
-  id-token: write   # OIDC
+  id-token: write
   contents: read
 
-concurrency:
-  group: terraform-site
-  cancel-in-progress: false   # never kill a running apply
-
-env:
-  TF_IN_AUTOMATION: "true"
-  TF_INPUT: "false"
-  TF_VERSION: "1.13.x"
-
-defaults:
-  run:
-    working-directory: site
-
 jobs:
-  plan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-          terraform_wrapper: false
-
-      - name: Show OIDC subject (debug)
-        run: |
-          TOKEN=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
-          P=$(echo "$TOKEN" | cut -d. -f2 | tr '_-' '/+')
-          while [ $(( ${#P} % 4 )) -ne 0 ]; do P="$P="; done
-          echo "$P" | base64 -d | jq '{sub, repository, ref, event_name}'
-
-
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.TF_PLAN_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: Format check
-        run: terraform fmt -check -recursive
-
-      - name: Init
-        run: terraform init -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
-
-      - name: Validate
-        run: terraform validate
-
-      - name: Plan
-        id: plan
-        run: |
-          set +e
-          terraform plan -detailed-exitcode -out=tfplan
-          code=$?
-          set -e
-          [ "$code" -eq 1 ] && exit 1
-          echo "has_changes=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
-
-      - name: Plan summary
-        run: |
-          {
-            echo "## Terraform plan"
-            echo '```'
-            terraform show -no-color tfplan | tail -c 60000
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload plan
-        if: github.ref == 'refs/heads/main' && steps.plan.outputs.has_changes == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: tfplan
-          path: |
-            site/tfplan
-            site/.terraform.lock.hcl
-          retention-days: 1
-
-    outputs:
-      has_changes: ${{ steps.plan.outputs.has_changes }}
-
-  apply:
-    needs: plan
-    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_changes == 'true'
-    runs-on: ubuntu-latest
-    environment: infra-prod   # pauses here for your approval
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: ${{ env.TF_VERSION }}
-          terraform_wrapper: false
-
-      - uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.TF_APPLY_ROLE_ARN }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: tfplan
-          path: site
-
-      - name: Init
-        run: terraform init -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
-
-      - name: Apply reviewed plan
-        run: terraform apply tfplan
-
-      - name: Outputs
-        run: |
-          {
-            echo "## Outputs (website repo secrets)"
-            echo '```'
-            terraform output
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+  prod:
+    uses: ./.github/workflows/terraform-env.yml
+    with:
+      environment: prod
+    secrets: inherit

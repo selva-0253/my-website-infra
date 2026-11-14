@@ -1,15 +1,15 @@
 resource "aws_cloudfront_origin_access_control" "site" {
-  name                              = "${local.name}-oac"
+  name                              = "${var.name}-oac"
   description                       = "OAC for ${local.bucket}"
   origin_access_control_origin_type = "s3"
   signing_behavior                  = "always"
   signing_protocol                  = "sigv4"
 }
 
-# Rewrites directory-style URLs (/blog/ -> /blog/index.html), since a private
-# S3 origin only resolves index.html at the root via default_root_object.
+# Rewrites directory URLs (/blog/ -> /blog/index.html); a private S3 origin
+# only resolves index.html at the root via default_root_object.
 resource "aws_cloudfront_function" "rewrite_index" {
-  name    = "${local.name}-rewrite-index"
+  name    = "${var.name}-rewrite-index"
   runtime = "cloudfront-js-2.0"
   publish = true
   code    = <<-EOT
@@ -26,7 +26,6 @@ resource "aws_cloudfront_function" "rewrite_index" {
   EOT
 }
 
-# AWS-managed policies
 data "aws_cloudfront_cache_policy" "caching_optimized" {
   name = "Managed-CachingOptimized"
 }
@@ -39,7 +38,7 @@ resource "aws_cloudfront_distribution" "site" {
   enabled             = true
   is_ipv6_enabled     = true
   http_version        = "http2and3"
-  comment             = "${local.name} static site"
+  comment             = "${var.name} static site"
   default_root_object = "index.html"
   price_class         = var.price_class
   aliases             = local.aliases
@@ -65,8 +64,8 @@ resource "aws_cloudfront_distribution" "site" {
     }
   }
 
-  # With OAC and no s3:ListBucket, missing objects return 403. Show the home
-  # page with a real 404 status. Swap to "/404.html" if you add one.
+  # With OAC and no s3:ListBucket, missing objects return 403. Serve the home
+  # page with a 404 status; point at "/404.html" if you add one.
   custom_error_response {
     error_code            = 403
     response_code         = 404

@@ -6,19 +6,18 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.0"
     }
+    github = {
+      source  = "integrations/github"
+      version = "~> 6.0"
+    }
   }
 
-  # Run this once with local state (from your VM/laptop, admin credentials).
-  # Optionally move its state into the bucket it creates afterwards:
-  #   uncomment, set bucket, then `terraform init -migrate-state`.
-  #
-  # backend "s3" {
-  #   bucket       = "<tf_state_bucket output>"
-  #   key          = "my-website/bootstrap.tfstate"
-  #   region       = "ap-south-1"
-  #   encrypt      = true
-  #   use_lockfile = true
-  # }
+  # Bootstrap starts with local state because the state bucket does not exist
+  # yet. After the first apply you can move it into that bucket:
+  #   terraform init -migrate-state \
+  #     -backend-config="bucket=<state_bucket output>" -backend-config="region=<aws_region>" \
+  #     -backend-config="key=bootstrap/terraform.tfstate"
+  # after replacing this comment block with:  backend "s3" { use_lockfile = true }
 }
 
 provider "aws" {
@@ -30,4 +29,9 @@ provider "aws" {
       ManagedBy = "terraform-bootstrap"
     }
   }
+}
+
+# Authenticates with the GITHUB_TOKEN environment variable.
+provider "github" {
+  owner = var.github_owner
 }

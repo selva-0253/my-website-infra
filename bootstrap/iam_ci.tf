@@ -1,4 +1,5 @@
-# OIDC provider shared by both repos (infra workflow + website deploy role).
+# OIDC provider + the two roles the infra repo's workflow uses.
+
 resource "aws_iam_openid_connect_provider" "github" {
   count          = var.create_github_oidc_provider ? 1 : 0
   url            = "https://token.actions.githubusercontent.com"
@@ -12,16 +13,14 @@ data "aws_iam_openid_connect_provider" "github" {
 
 locals {
   oidc_arn = var.create_github_oidc_provider ? aws_iam_openid_connect_provider.github[0].arn : data.aws_iam_openid_connect_provider.github[0].arn
-  repo     = var.infra_repository
 
-  # Everything the site config may create is prefixed with project_name.
-  role_prefix_arn   = "arn:aws:iam::${local.account_id}:role/${var.project_name}-*"
-  bucket_prefix_arn = "arn:aws:s3:::${var.project_name}-*"
+  site_bucket_arn  = "arn:aws:s3:::${var.project_name}-*"
+  ssm_param_arn    = "arn:aws:ssm:*:${local.account_id}:parameter/${var.project_name}/*"
+  deploy_role_arns = [for r in aws_iam_role.site_deploy : r.arn]
 }
 
-# =====================================================================
-# PLAN role: read-only. Used by PRs and by the plan job on main.
-# =====================================================================
+# ------------------------------------------------------------------ plan role
+# Read-only. Usable from pull requests and from the infra branch.
 
 data "aws_iam_policy_document" "plan_trust" {
   statement {
@@ -38,10 +37,10 @@ data "aws_iam_policy_document" "plan_trust" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values = [
-        "repo:${local.repo}:pull_request",
-        "repo:${local.repo}:ref:refs/heads/main",
-      ]
+      values = flatten([for p in local.infra_sub_prefixes : [
+        "${p}:pull_request",
+        "${p}:ref:refs/heads/${var.infra_branch}",
+      ]])
     }
   }
 }
@@ -58,13 +57,19 @@ data "aws_iam_policy_document" "plan" {
       "s3:Get*", "s3:List*",
       "cloudfront:Get*", "cloudfront:List*", "cloudfront:Describe*",
       "acm:Describe*", "acm:List*", "acm:Get*",
-      "route53:Get*", "route53:List*",
       "iam:Get*", "iam:List*",
+      "ssm:DescribeParameters",
     ]
     resources = ["*"]
   }
 
-  # plan takes the state lock, which writes/deletes a .tflock object.
+  statement {
+    sid       = "ReadSiteParameters"
+    actions   = ["ssm:GetParameter", "ssm:GetParameters", "ssm:ListTagsForResource"]
+    resources = [local.ssm_param_arn]
+  }
+
+  # plan takes the state lock, which writes and deletes a .tflock object.
   statement {
     sid       = "StateLock"
     actions   = ["s3:PutObject", "s3:DeleteObject"]
@@ -78,9 +83,8 @@ resource "aws_iam_role_policy" "tf_plan" {
   policy = data.aws_iam_policy_document.plan.json
 }
 
-# =====================================================================
-# APPLY role: write. Only the approval-gated GitHub environment can use it.
-# =====================================================================
+# ----------------------------------------------------------------- apply role
+# Only jobs running in a GitHub environment "infra-<env>" can assume it.
 
 data "aws_iam_policy_document" "apply_trust" {
   statement {
@@ -97,7 +101,9 @@ data "aws_iam_policy_document" "apply_trust" {
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = ["repo:${local.repo}:environment:${var.apply_environment}"]
+      values = flatten([for p in local.infra_sub_prefixes : [
+        for env in keys(var.environments) : "${p}:environment:infra-${env}"
+      ]])
     }
   }
 }
@@ -108,7 +114,6 @@ resource "aws_iam_role" "tf_apply" {
 }
 
 data "aws_iam_policy_document" "apply" {
-  # Read anything the plan role can read (refresh step).
   source_policy_documents = [data.aws_iam_policy_document.plan.json]
 
   statement {
@@ -120,10 +125,9 @@ data "aws_iam_policy_document" "apply" {
   statement {
     sid       = "ManageSiteBuckets"
     actions   = ["s3:*"]
-    resources = [local.bucket_prefix_arn, "${local.bucket_prefix_arn}/*"]
+    resources = [local.site_bucket_arn, "${local.site_bucket_arn}/*"]
   }
 
-  # Never let CI delete or rewrite the state bucket's own config.
   statement {
     sid    = "ProtectStateBucket"
     effect = "Deny"
@@ -140,31 +144,21 @@ data "aws_iam_policy_document" "apply" {
     resources = ["*"]
   }
 
+  # CI cannot create IAM roles. It may only set the permissions policy on the
+  # website deploy roles that bootstrap created.
   statement {
-    sid = "ManageSiteRoles"
+    sid       = "ManageDeployRolePermissions"
+    actions   = ["iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:GetRolePolicy"]
+    resources = local.deploy_role_arns
+  }
+
+  statement {
+    sid = "ManageSiteParameters"
     actions = [
-      "iam:CreateRole", "iam:DeleteRole", "iam:UpdateRole",
-      "iam:UpdateAssumeRolePolicy", "iam:TagRole", "iam:UntagRole",
-      "iam:PutRolePolicy", "iam:DeleteRolePolicy",
+      "ssm:PutParameter", "ssm:DeleteParameter",
+      "ssm:AddTagsToResource", "ssm:RemoveTagsFromResource",
     ]
-    resources = [local.role_prefix_arn]
-  }
-
-  # CI must not be able to modify its own roles.
-  statement {
-    sid       = "ProtectCiRoles"
-    effect    = "Deny"
-    actions   = ["iam:*"]
-    resources = [aws_iam_role.tf_plan.arn, aws_iam_role.tf_apply.arn]
-  }
-
-  dynamic "statement" {
-    for_each = var.hosted_zone_id == null ? [] : [var.hosted_zone_id]
-    content {
-      sid       = "ManageSiteDns"
-      actions   = ["route53:ChangeResourceRecordSets"]
-      resources = ["arn:aws:route53:::hostedzone/${statement.value}"]
-    }
+    resources = [local.ssm_param_arn]
   }
 }
 
