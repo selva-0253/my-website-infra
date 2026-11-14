@@ -135,9 +135,13 @@ Account numbers and GitHub IDs never appear in code. Terraform looks them up at 
 | Publish or modify content | Commit to `my-website` → push to `main`. The site updates in about a minute. |
 | Change infrastructure | Edit `my-website-infra` in a branch → open a PR → read the plan in the job summary → merge → approve the `infra-prod` deployment. |
 | Re-run a deploy | GitHub → Actions → *Deploy site* → **Run workflow**. |
-| Add an environment (e.g. dev) | Copy `envs/prod` to `envs/dev` and change its settings. Add `dev` to the bootstrap environments and re-apply bootstrap. Add a three-line job to `terraform.yml`. |
+| Add an environment (e.g. dev) | Six steps: (1) add it to the bootstrap environments and apply on the admin VM; (2) copy `envs/prod` to `envs/dev`, set its domain and state key, and pass the Cloudflare zone name for subdomains; (3) add a job to `terraform.yml`; (4) add the Cloudflare edit token to `infra-dev`; (5) PR → merge → approve; (6) add a website deploy workflow for the `develop` branch. Full walkthrough: **05-making-infrastructure-changes.md, section 6**. |
 | Roll back content | Revert the commit and push. The bucket also keeps 30 days of previous file versions. |
 | Change foundation or permissions | Edit `bootstrap/`, then run `terraform plan` / `apply` from the admin workstation. CI never runs bootstrap. |
+
+The full process for infrastructure changes (where each kind of change goes, adding new AWS services, adding environments, and what to avoid) is in **05-making-infrastructure-changes.md**.
+
+> Pushes that change only `docs/` or `bootstrap/` do not start the Terraform pipeline. This is by design.
 
 ---
 
@@ -176,3 +180,4 @@ Everything else, including the GitHub environments, variables and DNS records, w
 - **02-terraform-design-and-resources.md**: how the Terraform is designed and what it created, in plain language.
 - **03-technical-deep-dive.md**: GitHub Actions, Terraform, and how the providers work.
 - **04-case-study.md**: the project as a case study.
+- **05-making-infrastructure-changes.md**: step-by-step guide for changing the infrastructure.
