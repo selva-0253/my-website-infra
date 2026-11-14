@@ -1,0 +1,125 @@
+name: Terraform
+
+# PR            -> fmt + validate + plan (read-only role), plan shown in job summary
+# push to main  -> plan, then apply that exact plan after manual approval
+#                  (approval = required reviewer on the `infra-prod` environment)
+
+on:
+  pull_request:
+    paths: ["site/**", ".github/workflows/terraform.yml"]
+  push:
+    branches: [main]
+    paths: ["site/**", ".github/workflows/terraform.yml"]
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC
+  contents: read
+
+concurrency:
+  group: terraform-site
+  cancel-in-progress: false   # never kill a running apply
+
+env:
+  TF_IN_AUTOMATION: "true"
+  TF_INPUT: "false"
+  TF_VERSION: "1.13.x"
+
+defaults:
+  run:
+    working-directory: site
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.TF_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+
+      - name: Init
+        run: terraform init -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Plan
+        id: plan
+        run: |
+          set +e
+          terraform plan -detailed-exitcode -out=tfplan
+          code=$?
+          set -e
+          [ "$code" -eq 1 ] && exit 1
+          echo "has_changes=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Plan summary
+        run: |
+          {
+            echo "## Terraform plan"
+            echo '```'
+            terraform show -no-color tfplan | tail -c 60000
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload plan
+        if: github.ref == 'refs/heads/main' && steps.plan.outputs.has_changes == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: |
+            site/tfplan
+            site/.terraform.lock.hcl
+          retention-days: 1
+
+    outputs:
+      has_changes: ${{ steps.plan.outputs.has_changes }}
+
+  apply:
+    needs: plan
+    if: github.ref == 'refs/heads/main' && needs.plan.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    environment: infra-prod   # pauses here for your approval
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.TF_APPLY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: site
+
+      - name: Init
+        run: terraform init -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      - name: Apply reviewed plan
+        run: terraform apply tfplan
+
+      - name: Outputs
+        run: |
+          {
+            echo "## Outputs (website repo secrets)"
+            echo '```'
+            terraform output
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
