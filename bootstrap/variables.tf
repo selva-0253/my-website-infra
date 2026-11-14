@@ -18,7 +18,7 @@ variable "infra_repository" {
 variable "apply_environment" {
   description = "GitHub environment that gates terraform apply (add yourself as required reviewer)."
   type        = string
-  default     = "infra-prod"
+  default     = "production"
 }
 
 variable "hosted_zone_id" {
