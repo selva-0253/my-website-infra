@@ -17,6 +17,13 @@ locals {
   site_bucket_arn  = "arn:aws:s3:::${var.project_name}-*"
   ssm_param_arn    = "arn:aws:ssm:*:${local.account_id}:parameter/${var.project_name}/*"
   deploy_role_arns = [for r in aws_iam_role.site_deploy : r.arn]
+
+  # Engagement API (likes and comments)
+  engagement_role_arns = [for r in aws_iam_role.engagement_lambda : r.arn]
+  dynamodb_table_arn   = "arn:aws:dynamodb:*:${local.account_id}:table/${var.project_name}-*"
+  lambda_function_arn  = "arn:aws:lambda:*:${local.account_id}:function:${var.project_name}-*"
+  lambda_log_group_arn = "arn:aws:logs:*:${local.account_id}:log-group:/aws/lambda/${var.project_name}-*"
+  budget_arn           = "arn:aws:budgets::${local.account_id}:budget/${var.project_name}-*"
 }
 
 # ------------------------------------------------------------------ plan role
@@ -59,8 +66,18 @@ data "aws_iam_policy_document" "plan" {
       "acm:Describe*", "acm:List*", "acm:Get*",
       "iam:Get*", "iam:List*",
       "ssm:DescribeParameters",
+      "dynamodb:Describe*", "dynamodb:List*",
+      "lambda:Get*", "lambda:List*",
+      "apigateway:GET",
+      "logs:Describe*", "logs:ListTagsForResource", "logs:ListTagsLogGroup",
     ]
     resources = ["*"]
+  }
+
+  statement {
+    sid       = "ReadBudgets"
+    actions   = ["budgets:ViewBudget", "budgets:ListTagsForResource"]
+    resources = [local.budget_arn]
   }
 
   statement {
@@ -149,7 +166,53 @@ data "aws_iam_policy_document" "apply" {
   statement {
     sid       = "ManageDeployRolePermissions"
     actions   = ["iam:PutRolePolicy", "iam:DeleteRolePolicy", "iam:GetRolePolicy"]
-    resources = local.deploy_role_arns
+    resources = concat(local.deploy_role_arns, local.engagement_role_arns)
+  }
+
+  # ----- engagement API: table, function, logs, HTTP API, budget
+
+  statement {
+    sid       = "ManageEngagementTable"
+    actions   = ["dynamodb:*"]
+    resources = [local.dynamodb_table_arn]
+  }
+
+  statement {
+    sid       = "ManageEngagementFunction"
+    actions   = ["lambda:*"]
+    resources = [local.lambda_function_arn]
+  }
+
+  # Only the bootstrap-created execution roles, and only to Lambda.
+  statement {
+    sid       = "PassEngagementRole"
+    actions   = ["iam:PassRole"]
+    resources = local.engagement_role_arns
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PassedToService"
+      values   = ["lambda.amazonaws.com"]
+    }
+  }
+
+  statement {
+    sid       = "ManageEngagementLogs"
+    actions   = ["logs:*"]
+    resources = [local.lambda_log_group_arn, "${local.lambda_log_group_arn}:*"]
+  }
+
+  # API Gateway ARNs carry generated IDs, not names, so they cannot be
+  # limited by prefix.
+  statement {
+    sid       = "ManageHttpApis"
+    actions   = ["apigateway:GET", "apigateway:POST", "apigateway:PUT", "apigateway:PATCH", "apigateway:DELETE", "apigateway:TagResource", "apigateway:UntagResource"]
+    resources = ["arn:aws:apigateway:*::/*"]
+  }
+
+  statement {
+    sid       = "ManageBudgets"
+    actions   = ["budgets:ViewBudget", "budgets:ModifyBudget", "budgets:TagResource", "budgets:UntagResource", "budgets:ListTagsForResource"]
+    resources = [local.budget_arn]
   }
 
   statement {
