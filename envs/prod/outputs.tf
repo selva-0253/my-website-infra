@@ -13,3 +13,7 @@ output "cloudfront_distribution_id" {
 output "site_bucket" {
   value = module.site.site_bucket
 }
+
+output "api_base_url" {
+  value = one(module.engagement[*].api_base_url)
+}

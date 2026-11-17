@@ -21,3 +21,7 @@ output "github_oidc_subjects" {
     website = local.website_sub_prefixes
   }
 }
+
+output "engagement_lambda_role_arns" {
+  value = { for env, r in aws_iam_role.engagement_lambda : env => r.arn }
+}
