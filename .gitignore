@@ -7,3 +7,6 @@ crash.log
 
 # Lambda zips built during plan
 .build/
+
+# Python bytecode
+__pycache__/
