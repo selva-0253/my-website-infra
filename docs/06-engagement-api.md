@@ -143,6 +143,8 @@ aws dynamodb update-item --region ap-south-1 --table-name my-website-prod-engage
 | Apply: *a similar configuration with rules already exists* / entrypoint ruleset conflict | Rules for that phase already exist in the dashboard (step 0). Delete them and re-run apply. |
 | Apply: `403` from Cloudflare | Token missing a permission (section 2). |
 | Apply: `AccessDenied` on dynamodb / lambda / apigateway / budgets | Bootstrap was not re-applied (step 1). |
+| Apply: *Caller does not have permissions to create a Service Linked Role* (API Gateway domain) | The account-wide `AWSServiceRoleForAPIGateway` role is created by bootstrap (`iam_engagement.tf`). Re-apply bootstrap, then re-run the infra workflow. |
+| Plan: warning *failed to make http request for the dry run … 403* on rulesets | Expected. The provider's dry run is a write call, and the plan token is read-only. Harmless as long as the apply creates the rulesets. |
 | Apply: `NoSuchFile ... engagement-api.zip` | The plan artifact did not include `.build/`. Re-run the whole workflow, not just the apply job. |
 | Site: like/comment section only shows *Share* | `site-config.js` has empty values. Re-run *Deploy site* after the infra apply. |
 | Plan: *turnstile_secret_key is empty* | The `TURNSTILE_SECRET_KEY` repository secret is missing. |

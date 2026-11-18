@@ -23,3 +23,12 @@ resource "aws_iam_role" "engagement_lambda" {
   name               = "${var.project_name}-${each.key}-engagement-api"
   assume_role_policy = data.aws_iam_policy_document.engagement_lambda_trust.json
 }
+
+# API Gateway custom domains (api.<domain>) need this account-wide role, which
+# AWS creates on first use. CI cannot create IAM roles, so bootstrap does.
+# If it already exists in the account, import it instead of creating:
+#   terraform import aws_iam_service_linked_role.apigateway \
+#     arn:aws:iam::<account id>:role/aws-service-role/ops.apigateway.amazonaws.com/AWSServiceRoleForAPIGateway
+resource "aws_iam_service_linked_role" "apigateway" {
+  aws_service_name = "ops.apigateway.amazonaws.com"
+}
