@@ -44,6 +44,7 @@ module "engagement" {
   turnstile_site_key        = var.turnstile_site_key
   turnstile_secret_key      = var.turnstile_secret_key
   comments_require_approval = var.comments_require_approval
+  private_assets_bucket     = module.site.private_assets_bucket
   web_analytics_token       = var.web_analytics_token
   budget_email              = var.budget_email
   monthly_budget_usd        = var.monthly_budget_usd

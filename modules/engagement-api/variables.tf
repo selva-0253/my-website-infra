@@ -96,3 +96,21 @@ variable "monthly_budget_usd" {
   type    = number
   default = 5
 }
+
+variable "private_assets_bucket" {
+  description = "Bucket holding private/cv.pdf (from the static-site module). Null = no CV download route."
+  type        = string
+  default     = null
+}
+
+variable "cv_download_name" {
+  description = "File name visitors' browsers save the CV as."
+  type        = string
+  default     = "CV.pdf"
+}
+
+variable "cv_link_ttl_seconds" {
+  description = "How long a CV download link stays valid."
+  type        = number
+  default     = 300
+}

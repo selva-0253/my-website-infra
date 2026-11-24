@@ -25,6 +25,7 @@ resource "aws_apigatewayv2_route" "this" {
     "GET /v1/posts/{slug}",
     "POST /v1/posts/{slug}/likes",
     "POST /v1/posts/{slug}/comments",
+    "POST /v1/cv",
   ])
 
   api_id    = aws_apigatewayv2_api.this.id
