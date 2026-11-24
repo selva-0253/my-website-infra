@@ -49,7 +49,21 @@ TURNSTILE_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 _ddb = boto3.resource("dynamodb")
 _table = _ddb.Table(TABLE_NAME)
 _client = _ddb.meta.client
-_s3 = boto3.client("s3", config=Config(signature_version="s3v4")) if CV_BUCKET else None
+# Presigned links must use the bucket's regional endpoint. With the default
+# global endpoint (bucket.s3.amazonaws.com) S3 expects us-east-1 signatures for
+# buckets outside us-east-1 (especially new ones), and rejects the link with
+# AuthorizationQueryParametersError. The bucket lives in the Lambda's region.
+_REGION = os.environ.get("AWS_REGION", "ap-south-1")
+_s3 = (
+    boto3.client(
+        "s3",
+        region_name=_REGION,
+        endpoint_url=f"https://s3.{_REGION}.amazonaws.com",
+        config=Config(signature_version="s3v4", s3={"addressing_style": "virtual"}),
+    )
+    if CV_BUCKET
+    else None
+)
 
 
 def _resp(status, body, cache=False):
