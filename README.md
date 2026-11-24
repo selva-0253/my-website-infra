@@ -65,6 +65,8 @@ login (`aws configure sso`).
 - **Infrastructure change**: PR -> review plan in the job summary -> merge ->
   approve `infra-prod`.
 - **Content change**: push to `my-website` `main`.
+- **Profile details, photo, CV**: Parameter Store + private bucket, see
+  [docs/07](docs/07-profile-and-private-files.md); then re-run the website deploy.
 - **New environment** (e.g. `dev`): copy `envs/prod` to `envs/dev`, change its
   `terraform.tfvars` and `backend.hcl` key, add `dev` to bootstrap
   `environments`, re-apply bootstrap, add a `dev` job to `terraform.yml`.

@@ -33,7 +33,7 @@ resource "cloudflare_ruleset" "firewall" {
     {
       description = "API: only known paths"
       action      = "block"
-      expression  = "(http.host eq \"${local.api_host}\" and not starts_with(http.request.uri.path, \"/v1/posts/\"))"
+      expression  = "(http.host eq \"${local.api_host}\" and not starts_with(http.request.uri.path, \"/v1/posts/\") and http.request.uri.path ne \"/v1/cv\")"
       enabled     = true
     },
   ]
@@ -52,7 +52,7 @@ resource "cloudflare_ruleset" "rate_limit" {
     {
       description = "API: per-IP request rate"
       action      = "block"
-      expression  = "(http.request.uri.path contains \"/v1/posts/\")"
+      expression  = "(http.request.uri.path contains \"/v1/posts/\" or http.request.uri.path eq \"/v1/cv\")"
       enabled     = true
       ratelimit = {
         characteristics     = ["ip.src", "cf.colo.id"]

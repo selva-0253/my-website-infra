@@ -4,6 +4,10 @@ Routes (API Gateway HTTP API, payload v2):
   GET  /v1/posts/{slug}           -> {"slug", "likes", "comments": [...]}
   POST /v1/posts/{slug}/likes     body {"turnstileToken"}
   POST /v1/posts/{slug}/comments  body {"name", "text", "turnstileToken"}
+  POST /v1/cv                     body {"turnstileToken"} -> {"url", "expiresIn"}
+
+The CV route returns a short-lived presigned S3 link to the owner's CV, which
+lives in a private bucket and has no public URL.
 
 Every request must carry the x-origin-verify header that Cloudflare adds;
 anything else did not come through Cloudflare and is rejected.
@@ -22,6 +26,7 @@ import urllib.request
 
 import boto3
 from boto3.dynamodb.conditions import Attr, Key
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 TABLE_NAME = os.environ["TABLE_NAME"]
@@ -29,6 +34,10 @@ ORIGIN_SECRET = os.environ["ORIGIN_SECRET"]
 TURNSTILE_SECRET = os.environ["TURNSTILE_SECRET"]
 ALLOWED_HOSTNAMES = {h for h in os.environ.get("ALLOWED_HOSTNAMES", "").split(",") if h}
 REQUIRE_APPROVAL = os.environ.get("COMMENTS_REQUIRE_APPROVAL", "false") == "true"
+CV_BUCKET = os.environ.get("CV_BUCKET", "").strip("-")
+CV_KEY = os.environ.get("CV_KEY", "private/cv.pdf")
+CV_DOWNLOAD_NAME = re.sub(r"[^A-Za-z0-9._-]", "_", os.environ.get("CV_DOWNLOAD_NAME", "CV.pdf"))
+CV_LINK_TTL = int(os.environ.get("CV_LINK_TTL", "300"))
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 MAX_BODY = 4096
@@ -40,6 +49,7 @@ TURNSTILE_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify"
 _ddb = boto3.resource("dynamodb")
 _table = _ddb.Table(TABLE_NAME)
 _client = _ddb.meta.client
+_s3 = boto3.client("s3", config=Config(signature_version="s3v4")) if CV_BUCKET else None
 
 
 def _resp(status, body, cache=False):
@@ -175,12 +185,62 @@ def add_comment(slug, body):
     return _resp(201, {"comment": comment, "pending": status == "pending"})
 
 
+def cv_link():
+    if not _s3:
+        return _error(404, "CV is not available.")
+    try:
+        _s3.head_object(Bucket=CV_BUCKET, Key=CV_KEY)
+    except ClientError as exc:
+        # Without s3:ListBucket a missing object reports 403, not 404.
+        if exc.response["Error"]["Code"] in ("403", "404", "NoSuchKey", "Forbidden", "NotFound"):
+            return _error(404, "CV is not available.")
+        raise
+    url = _s3.generate_presigned_url(
+        "get_object",
+        Params={
+            "Bucket": CV_BUCKET,
+            "Key": CV_KEY,
+            "ResponseContentType": "application/pdf",
+            "ResponseContentDisposition": f'attachment; filename="{CV_DOWNLOAD_NAME}"',
+            "ResponseCacheControl": "no-store",
+        },
+        ExpiresIn=CV_LINK_TTL,
+    )
+    return _resp(200, {"url": url, "expiresIn": CV_LINK_TTL})
+
+
+def _parse_body(event):
+    """Returns (body dict, None) or (None, error response)."""
+    raw = event.get("body") or ""
+    if event.get("isBase64Encoded"):
+        return None, _error(400, "Unsupported body.")
+    if len(raw) > MAX_BODY:
+        return None, _error(413, "Request too large.")
+    try:
+        body = json.loads(raw or "{}")
+        if not isinstance(body, dict):
+            raise ValueError
+    except ValueError:
+        return None, _error(400, "Invalid JSON.")
+    return body, None
+
+
 def handler(event, context):
     headers = event.get("headers") or {}
     if not hmac.compare_digest(headers.get("x-origin-verify", ""), ORIGIN_SECRET):
         return _error(403, "Forbidden")
 
     route = event.get("routeKey", "")
+
+    if route == "POST /v1/cv":
+        body, err = _parse_body(event)
+        if err:
+            return err
+        if not _verify_turnstile(body.get("turnstileToken"), _client_ip(event)):
+            return _error(403, "Bot check failed. Please try again.")
+        print("cv link issued")  # audit trail in CloudWatch, no personal data
+        return cv_link()
+
     slug = (event.get("pathParameters") or {}).get("slug", "")
     if not SLUG_RE.match(slug):
         return _error(404, "Unknown post.")
@@ -188,17 +248,9 @@ def handler(event, context):
     if route == "GET /v1/posts/{slug}":
         return get_post(slug)
 
-    raw = event.get("body") or ""
-    if event.get("isBase64Encoded"):
-        return _error(400, "Unsupported body.")
-    if len(raw) > MAX_BODY:
-        return _error(413, "Request too large.")
-    try:
-        body = json.loads(raw or "{}")
-        if not isinstance(body, dict):
-            raise ValueError
-    except ValueError:
-        return _error(400, "Invalid JSON.")
+    body, err = _parse_body(event)
+    if err:
+        return err
 
     ip = _client_ip(event)
     if not _verify_turnstile(body.get("turnstileToken"), ip):

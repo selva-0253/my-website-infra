@@ -20,7 +20,37 @@ data "aws_iam_policy_document" "deploy" {
   statement {
     sid       = "ReadSiteParameters"
     actions   = ["ssm:GetParameter", "ssm:GetParameters"]
-    resources = [aws_ssm_parameter.site_bucket.arn, aws_ssm_parameter.distribution_id.arn]
+    resources = [aws_ssm_parameter.site_bucket.arn, aws_ssm_parameter.distribution_id.arn, aws_ssm_parameter.private_assets_bucket.arn]
+  }
+
+  # Owner profile (name, links, certifications), set by hand under <prefix>/profile/.
+  # String or SecureString (AWS managed key) both work.
+  statement {
+    sid     = "ReadProfileParameters"
+    actions = ["ssm:GetParametersByPath", "ssm:GetParameter", "ssm:GetParameters"]
+    resources = [
+      "arn:aws:ssm:*:${data.aws_caller_identity.current.account_id}:parameter${var.parameter_prefix}/profile",
+      "arn:aws:ssm:*:${data.aws_caller_identity.current.account_id}:parameter${var.parameter_prefix}/profile/*",
+    ]
+  }
+
+  # The photo is copied into the site. The CV is never readable by the deploy
+  # role; it may only check that private/cv.pdf exists (listing, not reading).
+  statement {
+    sid       = "ListProfileFiles"
+    actions   = ["s3:ListBucket"]
+    resources = [aws_s3_bucket.private_assets.arn]
+    condition {
+      test     = "StringLike"
+      variable = "s3:prefix"
+      values   = ["public/*", "private/cv.pdf"]
+    }
+  }
+
+  statement {
+    sid       = "ReadPublicProfileFiles"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.private_assets.arn}/public/*"]
   }
 
   statement {

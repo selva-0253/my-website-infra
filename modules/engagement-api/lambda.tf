@@ -22,6 +22,16 @@ data "aws_iam_policy_document" "lambda" {
     resources = [aws_dynamodb_table.engagement.arn]
   }
 
+  # Only the CV object itself, only to sign short-lived download links.
+  dynamic "statement" {
+    for_each = var.private_assets_bucket == null ? [] : [1]
+    content {
+      sid       = "ReadCv"
+      actions   = ["s3:GetObject"]
+      resources = ["arn:aws:s3:::${var.private_assets_bucket}/private/cv.pdf"]
+    }
+  }
+
   statement {
     sid       = "Logs"
     actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
@@ -60,6 +70,10 @@ resource "aws_lambda_function" "api" {
       TURNSTILE_SECRET          = var.turnstile_secret_key
       ALLOWED_HOSTNAMES         = join(",", local.site_hosts)
       COMMENTS_REQUIRE_APPROVAL = tostring(var.comments_require_approval)
+      CV_BUCKET                 = coalesce(var.private_assets_bucket, "-")
+      CV_KEY                    = "private/cv.pdf"
+      CV_DOWNLOAD_NAME          = var.cv_download_name
+      CV_LINK_TTL               = tostring(var.cv_link_ttl_seconds)
     }
   }
 
